@@ -160,7 +160,7 @@ public class ViewLoginViewModel : ViewModelBase
                     // 保存登录信息
                     try
                     {
-                        var isSucceed = LoginHelper.SaveLoginInfoCookies(loginStatus.Data.Url);
+                        var isSucceed = LoginHelper.SaveLoginInfoCookies(loginStatus.Data.Url, loginStatus.Cookies);
                         if (!isSucceed)
                         {
                             EventAggregator.GetEvent<MessageEvent>().Publish(DictionaryResource.GetString("LoginFailed"));

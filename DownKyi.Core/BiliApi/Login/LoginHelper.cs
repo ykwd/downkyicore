@@ -21,10 +21,16 @@ namespace DownKyi.Core.BiliApi.Login
         /// </summary>
         /// <param name="url"></param>
         /// <returns></returns>
-        public static bool SaveLoginInfoCookies(string url)
+        public static bool SaveLoginInfoCookies(string? url, IEnumerable<Cookie>? responseCookies = null)
         {
             var tempFile = LocalLoginInfo + "-" + Guid.NewGuid().ToString("N");
-            var cookieContainer = ObjectHelper.ParseCookie(url);
+            var cookieContainer = ObjectHelper.MergeLoginCookies(url, responseCookies);
+            if (!HasRequiredLoginCookies(cookieContainer))
+            {
+                Console.PrintLine("SaveLoginInfoCookies()缺少SESSDATA或DedeUserID");
+                LogManager.Error("LoginHelper", "登录响应中没有SESSDATA或DedeUserID");
+                return false;
+            }
 
             var isSucceed = ObjectHelper.WriteCookiesToDisk(tempFile, cookieContainer);
             if (isSucceed)
@@ -51,6 +57,12 @@ namespace DownKyi.Core.BiliApi.Login
             }
 
             return isSucceed;
+        }
+
+        private static bool HasRequiredLoginCookies(CookieContainer cookieContainer)
+        {
+            var names = ObjectHelper.GetAllCookies(cookieContainer).Select(cookie => cookie.Name).ToHashSet();
+            return names.Contains("SESSDATA") && names.Contains("DedeUserID");
         }
 
 

@@ -1,4 +1,5 @@
 ﻿using System.Collections;
+using System.Globalization;
 using System.Net;
 using System.Reflection;
 using System.Runtime.Serialization.Formatters.Binary;
@@ -10,59 +11,308 @@ namespace DownKyi.Core.Utils;
 public static class ObjectHelper
 {
     /// <summary>
+    /// B站网页登录 Cookie 的默认有效期，约 180 天。
+    /// </summary>
+    private const int DefaultCookieLifetimeSeconds = 15552000;
+
+    private static readonly string[] LoginCookieNames =
+    {
+        "SESSDATA",
+        "bili_jct",
+        "DedeUserID",
+        "DedeUserID__ckMd5",
+        "sid"
+    };
+
+    private static readonly Uri[] LoginCookieUris =
+    {
+        new("https://passport.bilibili.com/"),
+        new("https://www.bilibili.com/"),
+        new("https://api.bilibili.com/")
+    };
+
+    /// <summary>
     /// 解析二维码登录返回的url，用于设置cookie
     /// </summary>
     /// <param name="url"></param>
     /// <returns></returns>
-    public static CookieContainer ParseCookie(string url)
+    public static CookieContainer ParseCookie(string? url)
     {
+        return MergeLoginCookies(url, null);
+    }
+
+    /// <summary>
+    /// 合并跨域登录 URL 中的参数和 poll 响应 Set-Cookie。响应 Cookie 优先。
+    /// </summary>
+    public static CookieContainer MergeLoginCookies(string? url, IEnumerable<Cookie>? responseCookies)
+    {
+        var merged = new Dictionary<string, Cookie>(StringComparer.Ordinal);
+        foreach (var cookie in ParseUrlCookies(url))
+        {
+            merged[cookie.Name] = cookie;
+        }
+
+        if (responseCookies != null)
+        {
+            foreach (var cookie in responseCookies)
+            {
+                var normalized = CreateBilibiliCookie(cookie.Name, cookie.Value, cookie.Expires);
+                if (normalized != null)
+                {
+                    merged[normalized.Name] = normalized;
+                }
+            }
+        }
+
         var cookieContainer = new CookieContainer();
-
-        if (url is null or "")
+        foreach (var cookie in merged.Values)
         {
-            return cookieContainer;
-        }
-
-        var strList = url.Split('?');
-        if (strList.Length < 2)
-        {
-            return cookieContainer;
-        }
-
-        var strList2 = strList[1].Split('&');
-        if (strList2.Length == 0)
-        {
-            return cookieContainer;
-        }
-
-        // 获取expires
-        var expires = strList2.FirstOrDefault(it => it.Contains("Expires"))?.Split('=')[1];
-        var dateTime = DateTime.Now;
-        dateTime = dateTime.AddSeconds(int.Parse(expires));
-
-        foreach (var item in strList2)
-        {
-            var strList3 = item.Split('=');
-            if (strList3.Length < 2)
+            try
             {
-                continue;
+                cookieContainer.Add(cookie);
             }
-
-            var name = strList3[0];
-            var value = strList3[1];
-
-            // 不需要
-            if (name is "Expires" or "gourl")
+            catch (CookieException e)
             {
-                continue;
+                Console.PrintLine("添加Cookie失败: {0} {1}", cookie.Name, e.Message);
             }
-
-            // 添加cookie
-            cookieContainer.Add(new Cookie(name, value.Replace(",", "%2c"), "/", ".bilibili.com") { Expires = dateTime });
-            Console.PrintLine(name + ": " + value + "\t" + cookieContainer.Count);
         }
 
         return cookieContainer;
+    }
+
+    /// <summary>
+    /// 读取扫码登录响应里的 Set-Cookie。已有登录态只作底稿，本次响应里的同名 Cookie 会覆盖它。
+    /// </summary>
+    public static void CollectResponseCookies(HttpWebRequest request, HttpWebResponse response, ICollection<Cookie> target)
+    {
+        var merged = new Dictionary<string, Cookie>(StringComparer.Ordinal);
+        if (request.CookieContainer != null)
+        {
+            foreach (var uri in LoginCookieUris)
+            {
+                foreach (Cookie cookie in request.CookieContainer.GetCookies(uri))
+                {
+                    if (!LoginCookieNames.Contains(cookie.Name))
+                    {
+                        continue;
+                    }
+
+                    var created = CreateBilibiliCookie(cookie.Name, cookie.Value, cookie.Expires);
+                    if (created != null)
+                    {
+                        merged[created.Name] = created;
+                    }
+                }
+            }
+        }
+
+        foreach (Cookie cookie in response.Cookies)
+        {
+            var created = CreateBilibiliCookie(cookie.Name, cookie.Value, cookie.Expires);
+            if (created != null)
+            {
+                merged[created.Name] = created;
+            }
+        }
+
+        for (var i = 0; i < response.Headers.Count; i++)
+        {
+            if (!string.Equals(response.Headers.GetKey(i), "Set-Cookie", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var values = response.Headers.GetValues(i);
+            if (values == null)
+            {
+                continue;
+            }
+
+            foreach (var header in values)
+            {
+                ParseSetCookieHeader(header, merged);
+            }
+        }
+
+        foreach (var cookie in merged.Values)
+        {
+            target.Add(cookie);
+        }
+    }
+
+    public static Cookie? CreateBilibiliCookie(string? name, string? value, DateTime expires)
+    {
+        if (string.IsNullOrWhiteSpace(name) || string.IsNullOrEmpty(value))
+        {
+            return null;
+        }
+
+        try
+        {
+            name = Uri.UnescapeDataString(name.Trim());
+        }
+        catch (UriFormatException)
+        {
+            name = name.Trim();
+        }
+
+        if (IsCookieAttribute(name))
+        {
+            return null;
+        }
+
+        try
+        {
+            value = Uri.UnescapeDataString(value.Trim());
+        }
+        catch (UriFormatException)
+        {
+            value = value.Trim();
+        }
+
+        value = value.Replace(",", "%2c").Replace(";", "%3b");
+        if (string.IsNullOrEmpty(value))
+        {
+            return null;
+        }
+
+        if (expires == DateTime.MinValue)
+        {
+            expires = DateTime.Now.AddSeconds(DefaultCookieLifetimeSeconds);
+        }
+
+        return new Cookie(name, value, "/", ".bilibili.com")
+        {
+            Expires = expires,
+            HttpOnly = name == "SESSDATA",
+            Secure = true
+        };
+    }
+
+    private static IEnumerable<Cookie> ParseUrlCookies(string? url)
+    {
+        if (string.IsNullOrEmpty(url))
+        {
+            yield break;
+        }
+
+        var queryIndex = url.IndexOf('?');
+        if (queryIndex < 0 || queryIndex >= url.Length - 1)
+        {
+            yield break;
+        }
+
+        var query = url[(queryIndex + 1)..];
+        var hashIndex = query.IndexOf('#');
+        if (hashIndex >= 0)
+        {
+            query = query[..hashIndex];
+        }
+
+        var pairs = query.Split('&', StringSplitOptions.RemoveEmptyEntries);
+        var expires = ReadUrlExpires(pairs);
+        foreach (var pair in pairs)
+        {
+            var parts = pair.Split('=', 2);
+            if (parts.Length < 2)
+            {
+                continue;
+            }
+
+            var cookie = CreateBilibiliCookie(parts[0], parts[1], expires);
+            if (cookie != null)
+            {
+                yield return cookie;
+            }
+        }
+    }
+
+    private static DateTime ReadUrlExpires(string[] pairs)
+    {
+        var expires = DateTime.Now.AddSeconds(DefaultCookieLifetimeSeconds);
+        foreach (var pair in pairs)
+        {
+            if (!pair.StartsWith("Expires=", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var raw = pair["Expires=".Length..];
+            if (!long.TryParse(raw, out var seconds) || seconds <= 0)
+            {
+                break;
+            }
+
+            if (seconds > 10_000_000_000)
+            {
+                expires = DateTimeOffset.FromUnixTimeMilliseconds(seconds).LocalDateTime;
+            }
+            else if (seconds > 315360000)
+            {
+                expires = DateTimeOffset.FromUnixTimeSeconds(seconds).LocalDateTime;
+            }
+            else
+            {
+                expires = DateTime.Now.AddSeconds(seconds);
+            }
+
+            break;
+        }
+
+        return expires;
+    }
+
+    private static void ParseSetCookieHeader(string header, IDictionary<string, Cookie> merged)
+    {
+        if (string.IsNullOrWhiteSpace(header))
+        {
+            return;
+        }
+
+        var parts = header.Split(';');
+        var nameValue = parts[0].Split('=', 2);
+        if (nameValue.Length < 2)
+        {
+            return;
+        }
+
+        var expires = DateTime.MinValue;
+        foreach (var part in parts.Skip(1))
+        {
+            var item = part.Trim();
+            const string expiresPrefix = "expires=";
+            if (!item.StartsWith(expiresPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var dateText = item[expiresPrefix.Length..];
+            if (DateTime.TryParse(dateText, CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var parsed))
+            {
+                expires = parsed.ToLocalTime();
+            }
+
+            break;
+        }
+
+        var cookie = CreateBilibiliCookie(nameValue[0], nameValue[1], expires);
+        if (cookie != null)
+        {
+            merged[cookie.Name] = cookie;
+        }
+    }
+
+    private static bool IsCookieAttribute(string name)
+    {
+        return name.Equals("Expires", StringComparison.OrdinalIgnoreCase)
+               || name.Equals("gourl", StringComparison.OrdinalIgnoreCase)
+               || name.Equals("Path", StringComparison.OrdinalIgnoreCase)
+               || name.Equals("Domain", StringComparison.OrdinalIgnoreCase)
+               || name.Equals("Max-Age", StringComparison.OrdinalIgnoreCase)
+               || name.Equals("SameSite", StringComparison.OrdinalIgnoreCase)
+               || name.Equals("HttpOnly", StringComparison.OrdinalIgnoreCase)
+               || name.Equals("Secure", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

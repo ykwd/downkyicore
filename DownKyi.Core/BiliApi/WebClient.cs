@@ -6,6 +6,7 @@ using System.Text.Json.Serialization;
 using DownKyi.Core.BiliApi.Login;
 using DownKyi.Core.Logging;
 using DownKyi.Core.Settings;
+using DownKyi.Core.Utils;
 
 namespace DownKyi.Core.BiliApi;
 
@@ -59,7 +60,7 @@ internal static class WebClient
     /// <param name="parameters"></param>
     /// <param name="retry"></param>
     /// <returns></returns>
-    public static string RequestWeb(string url, string? referer = null, string method = "GET", Dictionary<string, string>? parameters = null, int retry = 3)
+    public static string RequestWeb(string url, string? referer = null, string method = "GET", Dictionary<string, string>? parameters = null, int retry = 3, List<Cookie>? responseCookies = null)
     {
         // 重试次数
         if (retry <= 0)
@@ -151,19 +152,25 @@ internal static class WebClient
 
             var html = string.Empty;
             using var response = (HttpWebResponse)request.GetResponse();
-            if (response.ContentEncoding.ToLower().Contains("gzip"))
+            if (responseCookies != null)
+            {
+                ObjectHelper.CollectResponseCookies(request, response, responseCookies);
+            }
+
+            var encoding = response.ContentEncoding?.ToLower() ?? string.Empty;
+            if (encoding.Contains("gzip"))
             {
                 using var stream = new GZipStream(response.GetResponseStream(), CompressionMode.Decompress);
                 using var reader = new StreamReader(stream, Encoding.UTF8);
                 html = reader.ReadToEnd();
             }
-            else if (response.ContentEncoding.ToLower().Contains("deflate"))
+            else if (encoding.Contains("deflate"))
             {
                 using var stream = new DeflateStream(response.GetResponseStream(), CompressionMode.Decompress);
                 using var reader = new StreamReader(stream, Encoding.UTF8);
                 html = reader.ReadToEnd();
             }
-            else if (response.ContentEncoding.ToLower().Contains("br"))
+            else if (encoding.Contains("br"))
             {
                 using var stream = new BrotliStream(response.GetResponseStream(), CompressionMode.Decompress);
                 using var reader = new StreamReader(stream, Encoding.UTF8);
@@ -182,19 +189,19 @@ internal static class WebClient
         {
             Console.WriteLine("RequestWeb()发生Web异常: {0}", e);
             LogManager.Error(e);
-            return RequestWeb(url, referer, method, parameters, retry - 1);
+            return RequestWeb(url, referer, method, parameters, retry - 1, responseCookies);
         }
         catch (IOException e)
         {
             Console.WriteLine("RequestWeb()发生IO异常: {0}", e);
             LogManager.Error(e);
-            return RequestWeb(url, referer, method, parameters, retry - 1);
+            return RequestWeb(url, referer, method, parameters, retry - 1, responseCookies);
         }
         catch (Exception e)
         {
             Console.WriteLine("RequestWeb()发生其他异常: {0}", e);
             LogManager.Error(e);
-            return RequestWeb(url, referer, method, parameters, retry - 1);
+            return RequestWeb(url, referer, method, parameters, retry - 1, responseCookies);
         }
     }
 

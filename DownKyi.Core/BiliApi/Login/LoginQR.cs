@@ -1,4 +1,5 @@
-﻿using Avalonia.Media.Imaging;
+﻿using System.Net;
+using Avalonia.Media.Imaging;
 using DownKyi.Core.BiliApi.Login.Models;
 using DownKyi.Core.Logging;
 using DownKyi.Core.Utils;
@@ -38,11 +39,18 @@ public static class LoginQr
     {
         var url = $"https://passport.bilibili.com/x/passport-login/web/qrcode/poll?qrcode_key={qrcodeKey}";
 
-        var response = WebClient.RequestWeb(url);
+        var cookies = new List<Cookie>();
+        var response = WebClient.RequestWeb(url, responseCookies: cookies);
 
         try
         {
-            return JsonConvert.DeserializeObject<LoginStatus>(response);
+            var status = JsonConvert.DeserializeObject<LoginStatus>(response);
+            if (status != null)
+            {
+                status.Cookies = cookies;
+            }
+
+            return status;
         }
         catch (Exception e)
         {

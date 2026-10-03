@@ -1,4 +1,5 @@
-﻿using DownKyi.Core.BiliApi.Models;
+﻿using System.Net;
+using DownKyi.Core.BiliApi.Models;
 using Newtonsoft.Json;
 
 namespace DownKyi.Core.BiliApi.Login.Models
@@ -10,6 +11,8 @@ namespace DownKyi.Core.BiliApi.Login.Models
         [JsonProperty("message")] public string Message { get; set; }
 
         [JsonProperty("data")] public LoginStatusData Data { get; set; }
+
+        [JsonIgnore] public List<Cookie> Cookies { get; set; } = new();
     }
 
     [JsonObject]
